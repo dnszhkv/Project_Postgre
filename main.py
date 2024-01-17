@@ -27,8 +27,8 @@ try:
     # удаляю таблицы, если они существуют
     with conn.cursor() as cursor:
         cursor.execute(
-            'DROP TABLE IF EXISTS "public"."pereval_added_images", "public"."pereval_added", '
-            '"public"."pereval_images", "public"."coords", "public"."users" CASCADE;')
+            'DROP TABLE IF EXISTS "public"."pereval_added_images", "public"."pereval_added", "public"."pereval_images",'
+            '"public"."coords", "public"."users", "public"."pereval_areas", "public"."spr_activities_types" CASCADE;')
 
     # создаю таблицы
     with conn.cursor() as cursor:
@@ -235,6 +235,30 @@ class PerevalDatabase:
                         VALUES (%s, %s);
                         """,
                         (pereval_id, image_id),
+                    )
+
+                # добавляю зоны перевалов
+                areas_data = data.get("areas", {})
+                if areas_data:
+                    area_title = areas_data.get("title")
+                    cursor.execute(
+                        """
+                        INSERT INTO "public"."pereval_areas" ("id_parent", "title")
+                        VALUES (%s, %s);
+                        """,
+                        (pereval_id, area_title),
+                    )
+
+                # добавляю виды активностей
+                activities_types_data = data.get("activities_types", {})
+                if activities_types_data:
+                    activity_type_title = activities_types_data.get("title")
+                    cursor.execute(
+                        """
+                        INSERT INTO "public"."spr_activities_types" ("title")
+                        VALUES (%s);
+                        """,
+                        (activity_type_title,),
                     )
 
             return {"status": 200, "message": "Отправлено успешно", "id": pereval_id}
