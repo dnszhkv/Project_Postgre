@@ -2,6 +2,7 @@ import psycopg2
 from flask import Flask, request, jsonify
 from decouple import config
 import json
+import base64
 
 # Получаем данные для подключения к базе данных из переменных окружения
 host = config('FSTR_DB_HOST')
@@ -23,11 +24,17 @@ try:
 
     conn.autocommit = True
 
+    # удаляю таблицы, если они существуют
+    with conn.cursor() as cursor:
+        cursor.execute(
+            'DROP TABLE IF EXISTS "public"."pereval_added_images", "public"."pereval_added", '
+            '"public"."pereval_images", "public"."coords", "public"."users" CASCADE;')
+
     # создаю таблицы
     with conn.cursor() as cursor:
-        # таблица Users
+        # таблица users
         cursor.execute("""
-                CREATE TABLE IF NOT EXISTS "public"."Users" (
+                CREATE TABLE IF NOT EXISTS "public"."users" (
                     "id" serial PRIMARY KEY,
                     "email" text UNIQUE NOT NULL,
                     "phone" text,
@@ -37,9 +44,9 @@ try:
                 );
             """)
 
-        # таблица Coords
+        # таблица coords
         cursor.execute("""
-                CREATE TABLE IF NOT EXISTS "public"."Coords" (
+                CREATE TABLE IF NOT EXISTS "public"."coords" (
                     "id" serial PRIMARY KEY,
                     "latitude" double precision,
                     "longitude" double precision,
@@ -47,12 +54,13 @@ try:
                 );
             """)
 
-        # таблица PerevalImages
+        # таблица pereval_images
         cursor.execute("""
-                CREATE TABLE IF NOT EXISTS "public"."PerevalImages" (
+                CREATE TABLE IF NOT EXISTS "public"."pereval_images" (
                     "id" serial PRIMARY KEY,
                     "date_added" timestamp,
-                    "img" json
+                    "img" bytea,
+                    "title" text
                 );
             """)
 
@@ -67,20 +75,20 @@ try:
                     "connect" text,
                     "add_time" timestamp,
                     "raw_data" json,
-                    "coord_id" integer REFERENCES "public"."Coords"("id"),
+                    "coord_id" integer REFERENCES "public"."coords"("id"),
                     "level_winter" text,
                     "level_summer" text,
                     "level_autumn" text,
                     "level_spring" text,
-                    "user_id" integer REFERENCES "public"."Users"("id")
+                    "user_id" integer REFERENCES "public"."users"("id")
                 );
             """)
 
-        # таблица связи PerevalImages и pereval_added
+        # таблица связи pereval_images и pereval_added
         cursor.execute("""
-                CREATE TABLE IF NOT EXISTS "public"."PerevalAddedImages" (
+                CREATE TABLE IF NOT EXISTS "public"."pereval_added_images" (
                     "pereval_added_id" integer REFERENCES "public"."pereval_added"("id"),
-                    "image_id" integer REFERENCES "public"."PerevalImages"("id"),
+                    "image_id" integer REFERENCES "public"."pereval_images"("id"),
                     PRIMARY KEY ("pereval_added_id", "image_id")
                 );
             """)
@@ -102,15 +110,15 @@ try:
             );
         """)
 
-except Exception as _ex:
-    print('[INFO] Error while working with PostgresSQL', _ex)
+except Exception as ex:
+    print('[INFO] Error while working with PostgresSQL', ex)
 finally:
     if conn:
         conn.close()
         print('[INFO] PostgresSQL connection is closed')
 
 
-# Метод SubmitData
+# Метод submitData
 app = Flask(__name__)
 
 
@@ -135,7 +143,7 @@ class PerevalDatabase:
         try:
             # создаю курсор для выполнения запросов
             with self.conn.cursor() as cursor:
-                # добавление пользователя
+                # добавляю пользователя
                 user = data.get("user", {})
                 email = user.get("email")
                 phone = user.get("phone")
@@ -144,21 +152,21 @@ class PerevalDatabase:
                 otc = user.get("otc")
                 cursor.execute(
                     """
-                    INSERT INTO "public"."Users" ("email", "phone", "fam", "name", "otc")
+                    INSERT INTO "public"."users" ("email", "phone", "fam", "name", "otc")
                     VALUES (%s, %s, %s, %s, %s)
                     ON CONFLICT ("email") DO NOTHING;
                     """,
                     (email, phone, fam, name, otc),
                 )
 
-                # добавление координат
+                # добавляю координаты
                 coords = data.get("coords", {})
                 latitude = coords.get("latitude")
                 longitude = coords.get("longitude")
                 height = coords.get("height")
                 cursor.execute(
                     """
-                    INSERT INTO "public"."Coords" ("latitude", "longitude", "height")
+                    INSERT INTO "public"."coords" ("latitude", "longitude", "height")
                     VALUES (%s, %s, %s)
                     RETURNING "id";
                     """,
@@ -166,29 +174,30 @@ class PerevalDatabase:
                 )
                 coord_id = cursor.fetchone()[0]
 
-                # добавление уровня сложности
+                # добавляю уровень сложности
                 level = data.get("level", {})
                 winter = level.get("winter")
                 summer = level.get("summer")
                 autumn = level.get("autumn")
                 spring = level.get("spring")
 
-                # добавление изображений
+                # добавляю изображения
                 images = data.get("images", [])
                 image_ids = []
                 for img_data in images:
+                    img_binary = base64.b64decode(img_data["data"])
                     cursor.execute(
                         """
-                        INSERT INTO "public"."PerevalImages" ("date_added", "img")
-                        VALUES (CURRENT_TIMESTAMP, %s)
+                        INSERT INTO "public"."pereval_images" ("date_added", "img", "title")
+                        VALUES (CURRENT_TIMESTAMP, %s, %s)
                         RETURNING "id";
                         """,
-                        (img_data["data"],),
+                        (img_binary, img_data["title"]),
                     )
                     image_id = cursor.fetchone()[0]
                     image_ids.append(image_id)
 
-                # добавление перевала
+                # добавляю перевал
                 cursor.execute(
                     """
                     INSERT INTO "public"."pereval_added" (
@@ -197,7 +206,7 @@ class PerevalDatabase:
                     )
                     VALUES (
                         CURRENT_TIMESTAMP, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        (SELECT "id" FROM "public"."Users" WHERE "email" = %s)
+                        (SELECT "id" FROM "public"."users" WHERE "email" = %s)
                     )
                     RETURNING "id";
                     """,
@@ -218,11 +227,11 @@ class PerevalDatabase:
                 )
                 pereval_id = cursor.fetchone()[0]
 
-                # связывание изображений с перевалом
+                # связываю изображения с перевалом
                 for image_id in image_ids:
                     cursor.execute(
                         """
-                        INSERT INTO "public"."PerevalAddedImages" ("pereval_added_id", "image_id")
+                        INSERT INTO "public"."pereval_added_images" ("pereval_added_id", "image_id")
                         VALUES (%s, %s);
                         """,
                         (pereval_id, image_id),
@@ -234,6 +243,7 @@ class PerevalDatabase:
             print('[INFO] Error while submitting data to PostgreSQL', ex)
             return {"status": 500, "message": "Ошибка при выполнении операции", "id": None}
 
+    # закрываю подключение
     def close_connection(self):
         if self.conn:
             self.conn.close()
@@ -247,10 +257,10 @@ pereval_db = PerevalDatabase()
 @app.route('/submitData', methods=['POST'])
 def submit_data():
     try:
-        # Получаю данные из тела запроса
+        # получаю данные из тела запроса
         data = request.get_json()
 
-        # Вызываю метод submit_data для обработки данных и добавления в базу данных
+        # вызываю метод submit_data для обработки данных и добавления в базу данных
         result = pereval_db.submit_data(data)
 
         return jsonify(result)
@@ -261,11 +271,11 @@ def submit_data():
 
 
 if __name__ == '__main__':
-    # Считываем данные из файла data.json
+    # считываю данные из json-файла
     with open('data.json', 'r', encoding='utf-8') as file:
         json_data = json.load(file)
 
-    # Вызываем метод submit_data для обработки данных и добавления в базу данных
+    # вызываю метод submit_data для обработки данных и добавления их в базу данных
     result = pereval_db.submit_data(json_data)
 
     app.run(debug=True)
